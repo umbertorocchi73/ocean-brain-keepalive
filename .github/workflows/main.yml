@@ -1,0 +1,14 @@
+name: Ocean Brain Keep Alive
+
+on:
+  schedule:
+    - cron: '0 10 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sveglia Ocean Brain Supabase
+        run: |
+          curl -f "https://hjmgvgkikepunwwabchg.supabase.co/rest/v1/" || true
