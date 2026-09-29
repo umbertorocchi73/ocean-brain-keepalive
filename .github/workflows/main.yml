@@ -2,88 +2,153 @@ name: Ocean Brain Supabase Keep Alive
 
 on:
   schedule:
+    # GitHub esegue il controllo ogni giorno alle 08:00 UTC
+    # ma Supabase viene contattato solo nei giorni previsti dal ciclo.
     - cron: '0 8 * * *'
+
+  # Permette anche il test manuale
   workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   ocean-brain-monitor:
     runs-on: ubuntu-latest
 
     steps:
+      # ============================================================
+      # 1. DECIDE COSA FARE OGGI
+      # ============================================================
       - name: Calcola giorno del ciclo
         id: cycle
         shell: bash
         run: |
+          # Se avviamo manualmente da GitHub, facciamo SEMPRE
+          # un vero test keep-alive.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "action=keepalive" >> "$GITHUB_OUTPUT"
+            echo "Avvio manuale: eseguo subito KEEP-ALIVE"
+            exit 0
+          fi
+
+          # Numero di giorni trascorsi dal 01/01/1970
           DAYS=$(( $(date -u +%s) / 86400 ))
+
+          # Ciclo di 5 giorni
           POSITION=$(( DAYS % 5 ))
 
-          echo "position=$POSITION" >> "$GITHUB_OUTPUT"
+          echo "Posizione nel ciclo: $POSITION"
 
           if [ "$POSITION" -eq 0 ]; then
             echo "action=keepalive" >> "$GITHUB_OUTPUT"
             echo "Oggi eseguo il KEEP-ALIVE Supabase"
+
           elif [ "$POSITION" -eq 1 ]; then
             echo "action=verify" >> "$GITHUB_OUTPUT"
             echo "Oggi eseguo la VERIFICA del giorno successivo"
+
           else
             echo "action=none" >> "$GITHUB_OUTPUT"
-            echo "Oggi nessuna operazione necessaria"
+            echo "Oggi nessuna operazione Supabase"
           fi
 
+
+      # ============================================================
+      # 2. KEEP-ALIVE
+      # ============================================================
       - name: Keep-alive Supabase
         if: steps.cycle.outputs.action == 'keepalive'
         shell: bash
+
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
         run: |
-          echo "Controllo Ocean Brain / Supabase..."
+          echo "======================================"
+          echo "OCEAN BRAIN - KEEP ALIVE"
+          echo "======================================"
+          echo "Controllo connessione Supabase..."
 
           HTTP_CODE=$(curl \
             --silent \
             --show-error \
             --output response.txt \
             --write-out "%{http_code}" \
-            "${SUPABASE_URL}/rest/v1/" \
+            "${SUPABASE_URL}/rest/v1/ocean_brain_keepalive?select=id&limit=1" \
             -H "apikey: ${SUPABASE_KEY}")
 
           echo "HTTP CODE: ${HTTP_CODE}"
 
           if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+            echo "======================================"
             echo "KEEP-ALIVE RIUSCITO"
+            echo "SUPABASE ONLINE"
+            echo "DATABASE RAGGIUNGIBILE"
+            echo "======================================"
+            cat response.txt
           else
+            echo "======================================"
             echo "KEEP-ALIVE FALLITO"
+            echo "HTTP CODE: ${HTTP_CODE}"
+            echo "======================================"
             cat response.txt
             exit 1
           fi
 
+
+      # ============================================================
+      # 3. VERIFICA DEL GIORNO SUCCESSIVO
+      # ============================================================
       - name: Verifica giorno successivo
         if: steps.cycle.outputs.action == 'verify'
         shell: bash
+
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
         run: |
-          echo "Verifica Supabase del giorno successivo..."
+          echo "======================================"
+          echo "OCEAN BRAIN - VERIFICA"
+          echo "======================================"
+          echo "Controllo Supabase del giorno successivo..."
 
           HTTP_CODE=$(curl \
             --silent \
             --show-error \
             --output response.txt \
             --write-out "%{http_code}" \
-            "${SUPABASE_URL}/rest/v1/" \
+            "${SUPABASE_URL}/rest/v1/ocean_brain_keepalive?select=id&limit=1" \
             -H "apikey: ${SUPABASE_KEY}")
 
           echo "HTTP CODE: ${HTTP_CODE}"
 
           if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
-            echo "VERIFICA OK - SUPABASE RAGGIUNGIBILE"
+            echo "======================================"
+            echo "VERIFICA OK"
+            echo "SUPABASE RAGGIUNGIBILE"
+            echo "KEEP-ALIVE CONFERMATO"
+            echo "======================================"
+            cat response.txt
           else
+            echo "======================================"
             echo "VERIFICA FALLITA"
+            echo "HTTP CODE: ${HTTP_CODE}"
+            echo "======================================"
             cat response.txt
             exit 1
           fi
+
+
+      # ============================================================
+      # 4. GIORNO SENZA OPERAZIONI
+      # ============================================================
+      - name: Nessuna operazione oggi
+        if: steps.cycle.outputs.action == 'none'
+        shell: bash
+        run: |
+          echo "Ocean Brain Supabase Keep Alive"
+          echo "Oggi non è previsto nessun collegamento a Supabase."
+          echo "Il controllo automatico continua normalmente."
