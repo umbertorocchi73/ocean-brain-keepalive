@@ -1,14 +1,89 @@
-name: Ocean Brain Keep Alive
+name: Ocean Brain Supabase Keep Alive
 
 on:
   schedule:
-    - cron: '0 10 */3 * *'
+    - cron: '0 8 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
-  keep-alive:
+  ocean-brain-monitor:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Sveglia Ocean Brain Supabase
+      - name: Calcola giorno del ciclo
+        id: cycle
+        shell: bash
         run: |
-          curl -f "https://hjmgvgkikepunwwabchg.supabase.co/rest/v1/" || true
+          DAYS=$(( $(date -u +%s) / 86400 ))
+          POSITION=$(( DAYS % 5 ))
+
+          echo "position=$POSITION" >> "$GITHUB_OUTPUT"
+
+          if [ "$POSITION" -eq 0 ]; then
+            echo "action=keepalive" >> "$GITHUB_OUTPUT"
+            echo "Oggi eseguo il KEEP-ALIVE Supabase"
+          elif [ "$POSITION" -eq 1 ]; then
+            echo "action=verify" >> "$GITHUB_OUTPUT"
+            echo "Oggi eseguo la VERIFICA del giorno successivo"
+          else
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "Oggi nessuna operazione necessaria"
+          fi
+
+      - name: Keep-alive Supabase
+        if: steps.cycle.outputs.action == 'keepalive'
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          echo "Controllo Ocean Brain / Supabase..."
+
+          HTTP_CODE=$(curl \
+            --silent \
+            --show-error \
+            --output response.txt \
+            --write-out "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/" \
+            -H "apikey: ${SUPABASE_KEY}")
+
+          echo "HTTP CODE: ${HTTP_CODE}"
+
+          if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+            echo "KEEP-ALIVE RIUSCITO"
+          else
+            echo "KEEP-ALIVE FALLITO"
+            cat response.txt
+            exit 1
+          fi
+
+      - name: Verifica giorno successivo
+        if: steps.cycle.outputs.action == 'verify'
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          echo "Verifica Supabase del giorno successivo..."
+
+          HTTP_CODE=$(curl \
+            --silent \
+            --show-error \
+            --output response.txt \
+            --write-out "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/" \
+            -H "apikey: ${SUPABASE_KEY}")
+
+          echo "HTTP CODE: ${HTTP_CODE}"
+
+          if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+            echo "VERIFICA OK - SUPABASE RAGGIUNGIBILE"
+          else
+            echo "VERIFICA FALLITA"
+            cat response.txt
+            exit 1
+          fi
