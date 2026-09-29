@@ -2,11 +2,11 @@ name: Ocean Brain Supabase Keep Alive
 
 on:
   schedule:
-    # GitHub esegue il controllo ogni giorno alle 08:00 UTC
-    # ma Supabase viene contattato solo nei giorni previsti dal ciclo.
+    # Controllo giornaliero alle 08:00 UTC.
+    # Supabase viene contattato solo nei giorni previsti.
     - cron: '0 8 * * *'
 
-  # Permette anche il test manuale
+  # Permette il test manuale.
   workflow_dispatch:
 
 permissions:
@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       # ============================================================
       # 1. DECIDE COSA FARE OGGI
       # ============================================================
@@ -24,29 +25,26 @@ jobs:
         id: cycle
         shell: bash
         run: |
-          # Se avviamo manualmente da GitHub, facciamo SEMPRE
-          # un vero test keep-alive.
+          # Un avvio manuale esegue SEMPRE il keep-alive,
+          # così possiamo provarlo quando vogliamo.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "action=keepalive" >> "$GITHUB_OUTPUT"
             echo "Avvio manuale: eseguo subito KEEP-ALIVE"
             exit 0
           fi
 
-          # Numero di giorni trascorsi dal 01/01/1970
           DAYS=$(( $(date -u +%s) / 86400 ))
-
-          # Ciclo di 5 giorni
           POSITION=$(( DAYS % 5 ))
 
           echo "Posizione nel ciclo: $POSITION"
 
           if [ "$POSITION" -eq 0 ]; then
             echo "action=keepalive" >> "$GITHUB_OUTPUT"
-            echo "Oggi eseguo il KEEP-ALIVE Supabase"
+            echo "Oggi eseguo KEEP-ALIVE Supabase"
 
           elif [ "$POSITION" -eq 1 ]; then
             echo "action=verify" >> "$GITHUB_OUTPUT"
-            echo "Oggi eseguo la VERIFICA del giorno successivo"
+            echo "Oggi eseguo VERIFICA del giorno successivo"
 
           else
             echo "action=none" >> "$GITHUB_OUTPUT"
@@ -58,7 +56,9 @@ jobs:
       # 2. KEEP-ALIVE
       # ============================================================
       - name: Keep-alive Supabase
+        id: keepalive
         if: steps.cycle.outputs.action == 'keepalive'
+        continue-on-error: true
         shell: bash
 
         env:
@@ -69,7 +69,6 @@ jobs:
           echo "======================================"
           echo "OCEAN BRAIN - KEEP ALIVE"
           echo "======================================"
-          echo "Controllo connessione Supabase..."
 
           HTTP_CODE=$(curl \
             --silent \
@@ -77,32 +76,166 @@ jobs:
             --output response.txt \
             --write-out "%{http_code}" \
             "${SUPABASE_URL}/rest/v1/ocean_brain_keepalive?select=id&limit=1" \
-            -H "apikey: ${SUPABASE_KEY}")
+            -H "apikey: ${SUPABASE_KEY}") || HTTP_CODE="000"
 
           echo "HTTP CODE: ${HTTP_CODE}"
+          echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
 
-          if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+          if [ "${HTTP_CODE}" -ge 200 ] 2>/dev/null && \
+             [ "${HTTP_CODE}" -lt 300 ] 2>/dev/null; then
+
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+
             echo "======================================"
             echo "KEEP-ALIVE RIUSCITO"
             echo "SUPABASE ONLINE"
             echo "DATABASE RAGGIUNGIBILE"
             echo "======================================"
-            cat response.txt
+
           else
+
+            echo "result=error" >> "$GITHUB_OUTPUT"
+
             echo "======================================"
             echo "KEEP-ALIVE FALLITO"
             echo "HTTP CODE: ${HTTP_CODE}"
             echo "======================================"
-            cat response.txt
+
+            if [ -f response.txt ]; then
+              cat response.txt
+            fi
+
             exit 1
           fi
 
 
       # ============================================================
-      # 3. VERIFICA DEL GIORNO SUCCESSIVO
+      # 3. EMAIL - KEEP ALIVE RIUSCITO
+      # ============================================================
+      - name: Email - Keep-alive riuscito
+        if: >
+          steps.cycle.outputs.action == 'keepalive' &&
+          steps.keepalive.outcome == 'success'
+
+        env:
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          HTTP_CODE: ${{ steps.keepalive.outputs.http_code }}
+
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+          from datetime import datetime, timezone
+
+          sender = os.environ["EMAIL_USERNAME"]
+          password = os.environ["EMAIL_APP_PASSWORD"]
+          recipient = os.environ["EMAIL_TO"]
+          http_code = os.environ.get("HTTP_CODE", "N/D")
+
+          now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+
+          msg = EmailMessage()
+          msg["Subject"] = "OCEAN BRAIN - KEEP-ALIVE OK"
+          msg["From"] = sender
+          msg["To"] = recipient
+
+          msg.set_content(f"""
+          OCEAN BRAIN - SUPABASE
+
+          KEEP-ALIVE ESEGUITO CORRETTAMENTE
+
+          Supabase: ONLINE
+          Database: RAGGIUNGIBILE
+          HTTP CODE: {http_code}
+
+          Data controllo: {now}
+
+          Il sistema automatico continua regolarmente.
+          Il giorno successivo verrà effettuata la verifica di conferma.
+          """)
+
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+              smtp.login(sender, password)
+              smtp.send_message(msg)
+
+          print("Email di successo inviata.")
+          PY
+
+
+      # ============================================================
+      # 4. EMAIL - KEEP ALIVE FALLITO
+      # ============================================================
+      - name: Email - ERRORE Keep-alive
+        if: >
+          steps.cycle.outputs.action == 'keepalive' &&
+          steps.keepalive.outcome == 'failure'
+
+        env:
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          HTTP_CODE: ${{ steps.keepalive.outputs.http_code }}
+
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+          from datetime import datetime, timezone
+
+          sender = os.environ["EMAIL_USERNAME"]
+          password = os.environ["EMAIL_APP_PASSWORD"]
+          recipient = os.environ["EMAIL_TO"]
+          http_code = os.environ.get("HTTP_CODE", "N/D")
+
+          now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+
+          msg = EmailMessage()
+          msg["Subject"] = "URGENTE - OCEAN BRAIN KEEP-ALIVE FALLITO"
+          msg["From"] = sender
+          msg["To"] = recipient
+
+          msg.set_content(f"""
+          ATTENZIONE - OCEAN BRAIN
+
+          IL KEEP-ALIVE SUPABASE E' FALLITO.
+
+          HTTP CODE: {http_code}
+
+          Data controllo: {now}
+
+          INTERVENIRE AL PIU' PRESTO.
+
+          Controllare:
+          - stato progetto Supabase
+          - GitHub Actions
+          - API key Supabase
+          - raggiungibilita' database
+
+          Questo avviso viene inviato per permettere di intervenire
+          prima di una possibile sospensione del progetto.
+          """)
+
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+              smtp.login(sender, password)
+              smtp.send_message(msg)
+
+          print("Email di ERRORE inviata.")
+          PY
+
+
+      # ============================================================
+      # 5. VERIFICA DEL GIORNO SUCCESSIVO
       # ============================================================
       - name: Verifica giorno successivo
+        id: verify
         if: steps.cycle.outputs.action == 'verify'
+        continue-on-error: true
         shell: bash
 
         env:
@@ -113,7 +246,6 @@ jobs:
           echo "======================================"
           echo "OCEAN BRAIN - VERIFICA"
           echo "======================================"
-          echo "Controllo Supabase del giorno successivo..."
 
           HTTP_CODE=$(curl \
             --silent \
@@ -121,34 +253,173 @@ jobs:
             --output response.txt \
             --write-out "%{http_code}" \
             "${SUPABASE_URL}/rest/v1/ocean_brain_keepalive?select=id&limit=1" \
-            -H "apikey: ${SUPABASE_KEY}")
+            -H "apikey: ${SUPABASE_KEY}") || HTTP_CODE="000"
 
           echo "HTTP CODE: ${HTTP_CODE}"
+          echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
 
-          if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
-            echo "======================================"
+          if [ "${HTTP_CODE}" -ge 200 ] 2>/dev/null && \
+             [ "${HTTP_CODE}" -lt 300 ] 2>/dev/null; then
+
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+
             echo "VERIFICA OK"
             echo "SUPABASE RAGGIUNGIBILE"
-            echo "KEEP-ALIVE CONFERMATO"
-            echo "======================================"
-            cat response.txt
+
           else
-            echo "======================================"
+
+            echo "result=error" >> "$GITHUB_OUTPUT"
+
             echo "VERIFICA FALLITA"
-            echo "HTTP CODE: ${HTTP_CODE}"
-            echo "======================================"
-            cat response.txt
+
+            if [ -f response.txt ]; then
+              cat response.txt
+            fi
+
             exit 1
           fi
 
 
       # ============================================================
-      # 4. GIORNO SENZA OPERAZIONI
+      # 6. EMAIL - VERIFICA RIUSCITA
+      # ============================================================
+      - name: Email - Verifica riuscita
+        if: >
+          steps.cycle.outputs.action == 'verify' &&
+          steps.verify.outcome == 'success'
+
+        env:
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          HTTP_CODE: ${{ steps.verify.outputs.http_code }}
+
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+          from datetime import datetime, timezone
+
+          sender = os.environ["EMAIL_USERNAME"]
+          password = os.environ["EMAIL_APP_PASSWORD"]
+          recipient = os.environ["EMAIL_TO"]
+          http_code = os.environ.get("HTTP_CODE", "N/D")
+
+          now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+
+          msg = EmailMessage()
+          msg["Subject"] = "OCEAN BRAIN - VERIFICA SUPABASE OK"
+          msg["From"] = sender
+          msg["To"] = recipient
+
+          msg.set_content(f"""
+          OCEAN BRAIN - VERIFICA AUTOMATICA
+
+          VERIFICA RIUSCITA
+
+          Supabase: ONLINE
+          Database: RAGGIUNGIBILE
+          HTTP CODE: {http_code}
+
+          Data verifica: {now}
+
+          Il keep-alive risulta operativo.
+          Il sistema continuera' automaticamente il prossimo ciclo.
+          """)
+
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+              smtp.login(sender, password)
+              smtp.send_message(msg)
+
+          print("Email di verifica inviata.")
+          PY
+
+
+      # ============================================================
+      # 7. EMAIL - VERIFICA FALLITA
+      # ============================================================
+      - name: Email - ERRORE verifica
+        if: >
+          steps.cycle.outputs.action == 'verify' &&
+          steps.verify.outcome == 'failure'
+
+        env:
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          HTTP_CODE: ${{ steps.verify.outputs.http_code }}
+
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+          from datetime import datetime, timezone
+
+          sender = os.environ["EMAIL_USERNAME"]
+          password = os.environ["EMAIL_APP_PASSWORD"]
+          recipient = os.environ["EMAIL_TO"]
+          http_code = os.environ.get("HTTP_CODE", "N/D")
+
+          now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+
+          msg = EmailMessage()
+          msg["Subject"] = "URGENTE - OCEAN BRAIN VERIFICA FALLITA"
+          msg["From"] = sender
+          msg["To"] = recipient
+
+          msg.set_content(f"""
+          ATTENZIONE - OCEAN BRAIN
+
+          LA VERIFICA SUPABASE DEL GIORNO SUCCESSIVO E' FALLITA.
+
+          HTTP CODE: {http_code}
+
+          Data verifica: {now}
+
+          INTERVENIRE SUBITO.
+
+          Controllare il progetto Supabase prima che possa
+          essere sospeso per inattivita' o per altri problemi.
+          """)
+
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+              smtp.login(sender, password)
+              smtp.send_message(msg)
+
+          print("Email di ERRORE verifica inviata.")
+          PY
+
+
+      # ============================================================
+      # 8. GIORNO SENZA OPERAZIONI
       # ============================================================
       - name: Nessuna operazione oggi
         if: steps.cycle.outputs.action == 'none'
         shell: bash
         run: |
           echo "Ocean Brain Supabase Keep Alive"
-          echo "Oggi non è previsto nessun collegamento a Supabase."
-          echo "Il controllo automatico continua normalmente."
+          echo "Oggi non e' previsto nessun collegamento a Supabase."
+
+
+      # ============================================================
+      # 9. RENDE ROSSO IL WORKFLOW DOPO AVER INVIATO L'EMAIL
+      # ============================================================
+      - name: Segnala errore finale Keep-alive
+        if: >
+          steps.cycle.outputs.action == 'keepalive' &&
+          steps.keepalive.outcome == 'failure'
+        run: |
+          echo "Keep-alive fallito. Email di allarme gia' inviata."
+          exit 1
+
+      - name: Segnala errore finale Verifica
+        if: >
+          steps.cycle.outputs.action == 'verify' &&
+          steps.verify.outcome == 'failure'
+        run: |
+          echo "Verifica fallita. Email di allarme gia' inviata."
+          exit 1
